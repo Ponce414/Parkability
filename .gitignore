@@ -1,0 +1,53 @@
+# --- Python (backend, analysis, tools) ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Node / Vite (app) ---
+node_modules/
+dist/
+.vite/
+*.local
+
+# --- PlatformIO (firmware) ---
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# --- SQLite (backend) ---
+# parking.db is created by `make db-init` from schema.sql; never commit data.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# --- Secrets ---
+.env
+.env.local
+*.pem
+*.key
+
+# --- IDEs / editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.cursor/
+
+# --- OS noise ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Build / analysis output ---
+analysis/out/
+analysis/runs/
+*.log
