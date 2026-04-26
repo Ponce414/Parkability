@@ -4,6 +4,8 @@
  * Wires together: WiFi init, ESP-NOW init, radio scheduler, heartbeat,
  * bully, aggregator, uplink. The interesting logic lives in those modules;
  * this file is just the conductor.
+ *
+ * All tunables come from config.h.
  */
 
 #include <string.h>
@@ -15,6 +17,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 
+#include "config.h"
 #include "messages.h"
 #include "lamport.h"
 #include "radio_scheduler.h"
@@ -26,22 +29,9 @@
 
 static const char *TAG = "leader";
 
-/* Zone identity — one of these per flashed leader. TODO(team): move to NVS
- * once we have more than one zone hardware-provisioned. */
-#define ZONE_LOT   "lotA"
-#define ZONE_ID    "zone1"
-
-/* TODO(team): these must come from secrets management in production.
- * For class bring-up, set them here and don't commit real credentials. */
-#define WIFI_SSID     "parking-lot-net"
-#define WIFI_PASSWORD "change-me"
-#define BACKEND_HOST  "192.168.1.10"
-#define BACKEND_PORT  1883   /* MQTT default; 8000 if UPLINK_PROTOCOL_REST */
-
 static uint32_t priority_from_mac(const uint8_t mac[6])
 {
-    /* Use the low 4 bytes of the MAC as node priority. Deterministic and
-     * unique within a zone. */
+    /* Low 4 bytes of MAC. Deterministic and unique within a zone. */
     return ((uint32_t)mac[2] << 24) | ((uint32_t)mac[3] << 16)
          | ((uint32_t)mac[4] << 8)  |  (uint32_t)mac[5];
 }
@@ -59,23 +49,29 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
+    /* WiFi must be initialized in STA mode before either ESP-NOW or the
+     * uplink can use the radio. The radio scheduler then time-shares
+     * between ESP-NOW and an associated WiFi connection. */
+    esp_netif_create_default_wifi_sta();
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE));
 
     uint8_t my_mac[6];
     esp_wifi_get_mac(WIFI_IF_STA, my_mac);
     uint32_t my_priority = priority_from_mac(my_mac);
-    ESP_LOGI(TAG, "leader boot: zone=%s/%s priority=0x%08x",
-             ZONE_LOT, ZONE_ID, (unsigned)my_priority);
+    ESP_LOGI(TAG, "leader boot: zone=%s/%s priority=0x%08x mac=%02x:%02x:%02x:%02x:%02x:%02x",
+             ZONE_LOT, ZONE_ID, (unsigned)my_priority,
+             my_mac[0], my_mac[1], my_mac[2], my_mac[3], my_mac[4], my_mac[5]);
 
     espnow_handler_init();
     aggregator_init();
     bully_init(my_priority);
     heartbeat_init(my_priority);
-    wifi_uplink_init(WIFI_SSID, WIFI_PASSWORD, BACKEND_HOST, BACKEND_PORT);
+    wifi_uplink_init(WIFI_SSID, WIFI_PASSWORD);
     radio_scheduler_start();
 
     /* Main loop: poll heartbeat timeout and drain aggregator. */

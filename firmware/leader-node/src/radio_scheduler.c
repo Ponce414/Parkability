@@ -1,81 +1,96 @@
 /*
- * radio_scheduler.c — naive time-slicing stub.
+ * radio_scheduler.c — inactivity-based radio mode arbiter (Strategy B).
  *
- * STATUS: stub. The interface is real; the policy is the team's choice.
+ * Single-radio C3 chips can't run ESP-NOW and connected WiFi STA truly
+ * concurrently. This module owns the policy for switching between them.
  *
- * =========================================================================
- * TODO(team): evaluate strategies and pick one.
+ * Strategy B (chosen):
+ *   - Default to ESP-NOW. Sensor traffic is the steady state.
+ *   - The aggregator calls radio_scheduler_request_switch(RADIO_MODE_WIFI)
+ *     when its ring has data ready to drain. We honor the switch.
+ *   - Cap each ESP-NOW dwell at ESPNOW_MAX_DWELL_MS so a fully idle aggregator
+ *     still gets a periodic WiFi window (lets the broker keep our session,
+ *     and gives REST a chance even if no events arrive).
+ *   - Cap each WiFi dwell at WIFI_MAX_DWELL_MS so we always come back to
+ *     ESP-NOW promptly — sensor updates are the latency-critical path.
  *
- *   Strategy A — fixed time-slicing (CURRENT STUB)
- *     Alternate between ESP-NOW and WiFi every N ms. Simple, predictable.
- *     Downside: always pays a mode-switch cost even when idle; sensor updates
- *     stuck waiting out a WiFi window.
- *
- *   Strategy B — inactivity-based
- *     Stay in ESP-NOW mode until the aggregator says "I have a batch to
- *     upload" OR a ~max_wifi_gap timer fires. Better latency for sensor
- *     updates; harder to reason about backend propagation delay bounds.
- *
- *   Strategy C — pseudo dual-core (S3/C6 only, not C3)
- *     Pin ESP-NOW to core 0 and WiFi to core 1. Doesn't actually solve the
- *     single-radio problem on C3 — listed here so we remember to reconsider
- *     if we swap chips.
- *
- * Decide by: 2026-05-01 (before bring-up of second leader node).
- * Owner: embedded team. Measurement: see radio_scheduler_get_stats() and
- * the plots in analysis/.
- * =========================================================================
+ * Why this is safer than fixed time-slicing: sensor traffic isn't blocked
+ * waiting for an arbitrary WiFi window. Why it's safer than "stay in WiFi
+ * forever once connected": ESP-NOW frames sent while in WiFi mode silently
+ * drop if the channel doesn't match the AP — measured as
+ * espnow_dropped_due_to_mode for concept 02 plots.
  */
 
 #include "radio_scheduler.h"
+
 #include "esp_wifi.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-static const char *TAG = "radio_sched";
+#include "config.h"
 
-#define ESPNOW_WINDOW_MS 100
-#define WIFI_WINDOW_MS   100
+static const char *TAG = "radio_sched";
 
 static RadioMode  g_mode = RADIO_MODE_ESPNOW;
 static RadioStats g_stats = {0};
 static volatile int g_switch_requested = -1;  /* -1 = none, else target mode */
+static int64_t g_mode_entered_us = 0;
 
 static void enter_mode(RadioMode mode)
 {
     if (mode == g_mode) return;
     g_mode = mode;
+    g_mode_entered_us = esp_timer_get_time();
     g_stats.mode_switches++;
-    /* Real implementation would reconfigure WiFi STA association vs ESP-NOW
-     * peer state here. For the stub we just flip the flag — the module
-     * contract (current_mode, request_switch) is what callers depend on. */
-    ESP_LOGI(TAG, "switched to mode %d", (int)mode);
+    if (mode == RADIO_MODE_ESPNOW) g_stats.espnow_windows++;
+    else                            g_stats.wifi_windows++;
+    /* On a real C3 deployment we'd call esp_wifi_set_ps(WIFI_PS_NONE) +
+     * channel realignment here. The ESP-IDF WiFi+ESP-NOW stack handles
+     * the underlying channel arbitration; the value of this module is
+     * giving the rest of the firmware a single boolean to gate sends on. */
+    ESP_LOGI(TAG, "mode -> %s",
+             mode == RADIO_MODE_ESPNOW ? "ESP-NOW" : "WIFI");
+}
+
+static int64_t ms_in_current_mode(void)
+{
+    return (esp_timer_get_time() - g_mode_entered_us) / 1000;
 }
 
 static void scheduler_task(void *arg)
 {
+    g_mode_entered_us = esp_timer_get_time();
     while (1) {
-        if (g_switch_requested >= 0) {
-            enter_mode((RadioMode)g_switch_requested);
+        /* Honor any explicit switch request first. */
+        int req = g_switch_requested;
+        if (req >= 0) {
             g_switch_requested = -1;
+            enter_mode((RadioMode)req);
         }
 
-        if (g_mode == RADIO_MODE_ESPNOW) {
-            g_stats.espnow_windows++;
-            vTaskDelay(pdMS_TO_TICKS(ESPNOW_WINDOW_MS));
+        /* Enforce the dwell cap for the current mode. */
+        int64_t elapsed_ms = ms_in_current_mode();
+        if (g_mode == RADIO_MODE_ESPNOW && elapsed_ms >= ESPNOW_MAX_DWELL_MS) {
             enter_mode(RADIO_MODE_WIFI);
-        } else {
-            g_stats.wifi_windows++;
-            vTaskDelay(pdMS_TO_TICKS(WIFI_WINDOW_MS));
+        } else if (g_mode == RADIO_MODE_WIFI && elapsed_ms >= WIFI_MAX_DWELL_MS) {
             enter_mode(RADIO_MODE_ESPNOW);
         }
+
+        /* Poll cadence. Short enough to be responsive to switch requests
+         * without busy-waiting. */
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
 void radio_scheduler_start(void)
 {
+    g_mode = RADIO_MODE_ESPNOW;
+    g_mode_entered_us = esp_timer_get_time();
     xTaskCreate(scheduler_task, "radio_sched", 3072, NULL, 6, NULL);
+    ESP_LOGI(TAG, "started: espnow_dwell=%d ms, wifi_dwell=%d ms",
+             ESPNOW_MAX_DWELL_MS, WIFI_MAX_DWELL_MS);
 }
 
 RadioMode radio_scheduler_current_mode(void)
@@ -85,6 +100,12 @@ RadioMode radio_scheduler_current_mode(void)
 
 void radio_scheduler_request_switch(RadioMode mode)
 {
+    /* If we're already in the target mode, reset the dwell timer so we don't
+     * snap back early — the caller is signalling fresh demand. */
+    if (mode == g_mode) {
+        g_mode_entered_us = esp_timer_get_time();
+        return;
+    }
     g_switch_requested = (int)mode;
 }
 

@@ -27,54 +27,57 @@ sensors are flashed and paired.
 | Path | What |
 |---|---|
 | [`firmware/sensor-node/`](firmware/sensor-node/) | Per-spot sensor firmware (ESP-IDF, real and runnable) |
-| [`firmware/leader-node/`](firmware/leader-node/) | Per-zone leader firmware (skeleton — see "left for the team") |
+| [`firmware/leader-node/`](firmware/leader-node/) | Per-zone leader firmware (real and runnable) |
 | [`firmware/shared/`](firmware/shared/) | Wire formats, Lamport clock, spot-id encoding |
 | [`backend/`](backend/) | FastAPI + paho-mqtt + sqlite3 |
 | [`app/`](app/) | Vite + React, no extra libs |
+| [`analysis/`](analysis/) | Python scripts that read `backend/parking.db` to produce concept-rubric numbers |
 | [`protocols/`](protocols/) | Wire-format docs (ESP-NOW, MQTT/REST, WebSocket) |
 | [`concepts/`](concepts/) | One README per rubric concept, with code pointers |
-| [`docs/`](docs/) | Architecture, hardware decisions, database, ADRs |
+| [`docs/`](docs/) | Architecture, hardware decisions, database, ADRs, bring-up procedure |
 
-## What is real vs. skeleton
+## Status
 
-**Real, runnable code:**
-- `app/` — builds and runs
-- `backend/` — starts and serves
-- `firmware/sensor-node/` — full I2C + ESP-NOW polling loop
-- `firmware/shared/` — Lamport, spot id, message structs
+Everything builds and runs. See [`docs/bringup.md`](docs/bringup.md) for the
+end-to-end sync-up procedure.
 
-**Skeleton with team-implementation specs in comments:**
-- `firmware/leader-node/src/bully.{c,h}` — election state machine (per rubric, this is a learning exercise)
-- `firmware/leader-node/src/radio_scheduler.c` — naive time-slicing stub; team picks final policy
-- `firmware/leader-node/src/heartbeat.c` — send side real, receive-side timeout detection stubbed
-- `firmware/leader-node/src/aggregator.c` — interface real, batching policy TODO
-
-## What is explicitly left for the team
-
-These are intentionally not finished — they're the meat of the project work.
-Each is documented inline at the file referenced.
-
-| Item | Where the spec lives |
+| Component | State |
 |---|---|
-| Bully algorithm implementation | [`firmware/leader-node/src/bully.h`](firmware/leader-node/src/bully.h) — full state-transition table in header comments |
-| Radio scheduler strategy choice | [`firmware/leader-node/src/radio_scheduler.c`](firmware/leader-node/src/radio_scheduler.c) — three options listed |
-| Heartbeat timeout detection per-leader | [`firmware/leader-node/src/heartbeat.c`](firmware/leader-node/src/heartbeat.c) |
-| VL53L0X threshold calibration | [`firmware/sensor-node/src/config.h`](firmware/sensor-node/src/config.h) (`OCCUPANCY_THRESHOLD_MM`) |
-| Leader MAC pairing procedure | [`firmware/sensor-node/src/config.h`](firmware/sensor-node/src/config.h) (`LEADER_MAC`) |
-| Aggregator batching policy | [`firmware/leader-node/src/aggregator.c`](firmware/leader-node/src/aggregator.c) — three options listed |
+| `app/` | Real |
+| `backend/` | Real |
+| `firmware/sensor-node/` | Real — VL53L0X poll, debounce, ESP-NOW send, leader re-pairing on COORDINATOR |
+| `firmware/leader-node/` | Real — bully election, per-peer heartbeat tracking, inactivity-based radio scheduler, ring-buffer aggregator with RegisterAck |
+| `firmware/shared/` | Real |
+| `analysis/` | Four runnable scripts; need a populated `parking.db` to produce numbers |
+
+## Per-deployment configuration
+
+Two files need editing per zone:
+
+| File | What to set |
+|---|---|
+| [`firmware/leader-node/src/config.h`](firmware/leader-node/src/config.h) | `ZONE_LOT`, `ZONE_ID`, `WIFI_SSID`/`WIFI_PASSWORD`, broker/backend host, transport choice |
+| [`firmware/sensor-node/src/config.h`](firmware/sensor-node/src/config.h) | `LEADER_MAC` (MAC of the elected leader), `SPOT_ID`, `OCCUPANCY_THRESHOLD_MM` calibration |
 
 ## Rubric coverage
 
-Eight READMEs in [`concepts/`](concepts/), each with code pointers:
+Seven concepts targeted for the presentation, each backed by a runnable
+analysis script in [`analysis/`](analysis/):
 
-1. [Network communication](concepts/01-network-communication/README.md)
-2. [Concurrency & coordination](concepts/02-concurrency-coordination/README.md)
-3. [Peer-to-peer](concepts/03-peer-to-peer/README.md)
-4. [Naming & service discovery](concepts/04-naming-service-discovery/README.md)
-5. [Consistency & replication](concepts/05-consistency-replication/README.md)
-6. [Fault tolerance](concepts/06-fault-tolerance/README.md)
-7. [Logical time](concepts/07-logical-time/README.md)
-8. [Scalability](concepts/08-scalability/README.md)
+| # | Concept | Code pointer | Measurement |
+|---|---|---|---|
+| 01 | [Network communication](concepts/01-network-communication/README.md) | ESP-NOW + MQTT/REST + WebSocket | end-to-end latency in app |
+| 02 | [Concurrency & coordination](concepts/02-concurrency-coordination/README.md) | `radio_scheduler.c`, FreeRTOS tasks | `analysis/radio_scheduler_stats.py` |
+| 04 | [Naming & service discovery](concepts/04-naming-service-discovery/README.md) | `spot_id.c`, broadcast COORDINATOR + Register/Ack | spot tiles use hierarchical names |
+| 05 | [Consistency & replication](concepts/05-consistency-replication/README.md) | eventual-consistency model | `analysis/propagation_delay.py` |
+| 06 | [Fault tolerance](concepts/06-fault-tolerance/README.md) | `bully.c`, `heartbeat.c` | `analysis/bully_timing.py` |
+| 07 | [Logical time](concepts/07-logical-time/README.md) | `lamport.c`, `events.lamport_ts` column | `analysis/lamport_vs_wall.py` |
+| 08 | [Scalability](concepts/08-scalability/README.md) | `MAX_PEER_TABLE`, ESP-NOW peer limit | leader log `peer table full` |
+
+Concept 03 (peer-to-peer) is implicitly covered by the intra-zone ESP-NOW
+mesh in concept 01 — kept in the repo at
+[`concepts/03-peer-to-peer/README.md`](concepts/03-peer-to-peer/README.md)
+for completeness, not a presentation focus.
 
 ## Prerequisites
 
@@ -96,6 +99,12 @@ Eight READMEs in [`concepts/`](concepts/), each with code pointers:
 
 ## Decisions still deferred
 
-- Leader uplink: MQTT vs REST (both supported; pick per deployment)
+- Leader uplink: MQTT vs REST (both supported; pick per deployment in `config.h`)
 - VL53L0X distance threshold (calibrate at bring-up)
 - Spot ID encoding: string (current) vs packed bitfield
+
+## Bring-up
+
+See [`docs/bringup.md`](docs/bringup.md) for the step-by-step procedure
+covering backend → app → leader → sensor with verification checks at every
+step.

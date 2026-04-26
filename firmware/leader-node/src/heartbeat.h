@@ -1,12 +1,16 @@
 /*
- * heartbeat.h — liveness between zone leaders.
+ * heartbeat.h — peer liveness + per-leader timeout detection.
  *
- * Every zone has one active leader and one backup. Both send Heartbeat
- * messages on a fixed period. A missed-heartbeat streak exceeding
- * HEARTBEAT_TIMEOUT_MS triggers a Bully election.
+ * Maintains a small peer table keyed by MAC. Each entry stores the peer's
+ * priority (learned from received heartbeats) and the wall-time of the
+ * most recent heartbeat. Used by:
+ *   - heartbeat_check_timeout: detect that the *current coordinator* has
+ *     stopped heartbeating, distinct from "some other peer is silent"
+ *   - bully.c: enumerate higher-priority peers when starting an election,
+ *     and look up the current coordinator's MAC for sending OK
  *
- * Also used by the backend to detect leader death — the backend tracks
- * leader-change notifications from wifi_uplink.
+ * Tunables live in config.h (HEARTBEAT_INTERVAL_MS, HEARTBEAT_TIMEOUT_MS,
+ * MAX_PEER_TABLE).
  */
 
 #ifndef LEADER_HEARTBEAT_H
@@ -15,19 +19,27 @@
 #include <stdint.h>
 #include "messages.h"
 
-/* Defaults — tune at bring-up. HEARTBEAT_TIMEOUT_MS should be at least
- * 3x HEARTBEAT_INTERVAL_MS to tolerate a normal packet drop. */
-#define HEARTBEAT_INTERVAL_MS  1000
-#define HEARTBEAT_TIMEOUT_MS   3500
-
 void heartbeat_init(uint32_t my_priority);
 
-/* Called by espnow_handler.c on each received heartbeat — resets the
- * timeout timer against the sender. */
+/* Called by espnow_handler.c on each received heartbeat. Updates the peer
+ * table (creates entry if MAC unseen). */
 void heartbeat_on_received(const Heartbeat *msg);
 
-/* Poll in the main loop; returns 1 if the peer timed out since last check.
- * The stub leaves the detection logic as a TODO with a clear spec. */
-int  heartbeat_check_timeout(void);
+/* Poll in the main loop. If the current coordinator has gone silent for
+ * more than HEARTBEAT_TIMEOUT_MS, calls bully_on_heartbeat_timeout()
+ * exactly once per outage. Returns 1 if a timeout fired, else 0. */
+int heartbeat_check_timeout(void);
+
+/* Tell heartbeat who the current coordinator is. Bully calls this when it
+ * adopts a new coordinator (either by winning or by hearing one). */
+void heartbeat_set_coordinator(const uint8_t coordinator_mac[6], uint32_t priority);
+
+/* For bully use: enumerate peers with strictly higher priority than mine.
+ * Writes up to `max` MACs into out_macs, returns count written. */
+int  heartbeat_get_higher_priority_peers(uint8_t out_macs[][6], int max);
+
+/* For bully use: look up a peer's MAC by priority. Returns 0 on hit and
+ * fills out_mac, -1 if no such peer is currently known. */
+int  heartbeat_get_peer_mac(uint32_t priority, uint8_t out_mac[6]);
 
 #endif /* LEADER_HEARTBEAT_H */

@@ -1,12 +1,12 @@
 /*
  * wifi_uplink.h — leader -> backend link.
  *
- * Supports two protocols selected at compile time:
- *   -DUPLINK_PROTOCOL_MQTT (default)
- *   -DUPLINK_PROTOCOL_REST
+ * Two transports selected at compile time in config.h:
+ *   #define UPLINK_PROTOCOL_MQTT 1   (default)
+ *   #define UPLINK_PROTOCOL_REST 1
  *
- * The public interface here is protocol-agnostic. Implementation decides
- * whether to publish to an MQTT topic or POST to a REST endpoint.
+ * Public interface is protocol-agnostic. WiFi connection is managed here
+ * (connect on init, auto-reconnect on disconnect via WiFi event handler).
  */
 
 #ifndef LEADER_WIFI_UPLINK_H
@@ -15,24 +15,21 @@
 #include <stdint.h>
 #include "messages.h"
 
-/* Compile-time protocol switch. */
-#ifndef UPLINK_PROTOCOL_MQTT
-#ifndef UPLINK_PROTOCOL_REST
-#define UPLINK_PROTOCOL_MQTT 1
-#endif
-#endif
+/* Bring up WiFi STA + the chosen uplink transport. Non-blocking; the
+ * connection completes asynchronously and reconnects on drop. */
+void wifi_uplink_init(const char *ssid, const char *password);
 
-void wifi_uplink_init(const char *ssid, const char *password,
-                      const char *backend_host, uint16_t backend_port);
+/* True once WiFi is associated AND the chosen transport is ready. */
+int wifi_uplink_is_ready(void);
 
-/* Publish a sensor state change to the backend. Returns 0 on success,
- * negative on queue/network error. Caller must be in WiFi mode; if the
- * radio scheduler has ESP-NOW right now, this will queue or drop depending
- * on policy (currently: drop + bump stat). */
-int wifi_uplink_publish_update(const SensorUpdate *update, const char *leader_mac_str);
+/* Publish a sensor state change to the backend. Returns 0 on enqueue
+ * success (MQTT) or 200-class HTTP response (REST); negative on error. */
+int wifi_uplink_publish_update(const SensorUpdate *update,
+                               const char *leader_mac_str);
 
-/* Publish a leader-change notification — called by bully.c when this node
- * wins an election. */
-int wifi_uplink_publish_leader_change(const char *zone_id, const char *new_leader_mac);
+/* Publish a leader-change notification — called by bully.c when this
+ * node wins an election. */
+int wifi_uplink_publish_leader_change(const char *zone_id,
+                                      const char *new_leader_mac);
 
 #endif /* LEADER_WIFI_UPLINK_H */

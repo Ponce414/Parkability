@@ -129,16 +129,53 @@ static void on_espnow_send(const uint8_t *mac, esp_now_send_status_t status)
     }
 }
 
+/* Forward declaration; defined below. */
+static void send_register(void);
+
+static void switch_leader(const uint8_t new_leader_mac[6])
+{
+    /* Remove old peer (ignore error — peer table may be empty after boot
+     * mishaps). Add new peer and re-send REGISTER so the new leader knows
+     * about us. Idempotent on the leader side. */
+    esp_now_del_peer(g_leader_mac);
+    memcpy(g_leader_mac, new_leader_mac, 6);
+
+    esp_now_peer_info_t peer = {0};
+    memcpy(peer.peer_addr, g_leader_mac, 6);
+    peer.channel = ESPNOW_CHANNEL;
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = false;
+    esp_now_add_peer(&peer);
+
+    ESP_LOGI(TAG, "switched leader to %02x:%02x:%02x:%02x:%02x:%02x",
+             g_leader_mac[0], g_leader_mac[1], g_leader_mac[2],
+             g_leader_mac[3], g_leader_mac[4], g_leader_mac[5]);
+    send_register();
+}
+
 static void on_espnow_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
-    /* Sensors mostly don't need to receive, but we handle RegisterAck so we
-     * can confirm pairing in logs. */
     if (len < (int)sizeof(MessageHeader)) return;
     const MessageHeader *hdr = (const MessageHeader *)data;
     lamport_update(hdr->lamport_ts);
-    if (hdr->msg_type == MSG_REGISTER_ACK && len >= (int)sizeof(RegisterAck)) {
-        const RegisterAck *ack = (const RegisterAck *)data;
-        ESP_LOGI(TAG, "register ack for %s accepted=%u", ack->spot_id, ack->accepted);
+
+    switch (hdr->msg_type) {
+    case MSG_REGISTER_ACK:
+        if (len >= (int)sizeof(RegisterAck)) {
+            const RegisterAck *ack = (const RegisterAck *)data;
+            ESP_LOGI(TAG, "register ack for %s accepted=%u", ack->spot_id, ack->accepted);
+        }
+        break;
+    case MSG_COORDINATOR:
+        /* Bully announced a new leader. Re-pair and re-register. The new
+         * coordinator's MAC is the sender of this message. */
+        if (len >= (int)sizeof(Coordinator)) {
+            switch_leader(hdr->sender_mac);
+        }
+        break;
+    default:
+        /* Sensors don't act on heartbeats, elections, or sensor updates. */
+        break;
     }
 }
 
