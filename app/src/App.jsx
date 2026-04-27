@@ -1,31 +1,23 @@
-import React from 'react';
-import LotView from './components/LotView.jsx';
-import { useLotState } from './hooks/useLotState.js';
+import { useEffect, useState } from 'react'
+import HomePage from './pages/HomePage'
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+function App() {
+  const [theme, setTheme] = useState(() => {
+    const savedTheme = window.localStorage.getItem('parking-theme')
+    return savedTheme ?? 'dark'
+  })
 
-export default function App() {
-  const { lotState, connectionStatus } = useLotState(WS_URL);
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    window.localStorage.setItem('parking-theme', theme)
+  }, [theme])
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>Parking Lot — Live</h1>
-        <ConnectionBadge status={connectionStatus} />
-      </header>
-      <main>
-        <LotView lotState={lotState} />
-      </main>
-    </div>
-  );
+    <HomePage
+      theme={theme}
+      onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+    />
+  )
 }
 
-function ConnectionBadge({ status }) {
-  const label = {
-    connecting: 'Connecting…',
-    connected: 'Connected',
-    reconnecting: 'Reconnecting…',
-    disconnected: 'Disconnected',
-  }[status] || status;
-  return <span className={`badge badge-${status}`}>{label}</span>;
-}
+export default App

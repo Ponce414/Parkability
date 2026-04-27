@@ -1,0 +1,30 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-slate-100 font-sans text-slate-900 antialiased dark:bg-[#020816] dark:text-white;
+  margin: 0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+*::selection {
+  background: rgba(55, 214, 255, 0.24);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.dark body {
+  color-scheme: dark;
+}
