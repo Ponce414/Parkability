@@ -58,6 +58,15 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_set_country_code("US", true);
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    esp_err_t band_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
+    if (band_err == ESP_OK) {
+        ESP_LOGI(TAG, "wifi band mode: 2.4GHz only");
+    } else {
+        ESP_LOGW(TAG, "wifi 2.4GHz band mode failed: %s", esp_err_to_name(band_err));
+    }
+#endif
     ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE));
 
     uint8_t my_mac[6];

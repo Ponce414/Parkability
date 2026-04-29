@@ -5,6 +5,7 @@ import { formatRelativeMinutes, getSpotVisualState } from '../utils/formatters'
 function ParkingSpotCard({ spot, compact = false, muted = false }) {
   const visualState = getSpotVisualState(spot)
   const display = spot.displayId ?? spot.id
+  const hasDistance = Number.isFinite(spot.distance) && spot.distance > 0
 
   return (
     <motion.div
@@ -31,7 +32,7 @@ function ParkingSpotCard({ spot, compact = false, muted = false }) {
           </div>
           <div className="flex items-center justify-between rounded-2xl border border-white/15 bg-black/10 px-4 py-3 text-sm backdrop-blur-sm">
             <span>Distance</span>
-            <span className="font-medium">{spot.distance ? `${spot.distance} mm` : '—'}</span>
+            <span className="font-medium">{hasDistance ? `${spot.distance} mm` : '—'}</span>
           </div>
           <div className="flex items-center justify-between text-sm text-white/85">
             <span>{formatRelativeMinutes(spot.lastUpdated)}</span>

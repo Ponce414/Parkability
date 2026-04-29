@@ -82,12 +82,12 @@ class MQTTIngest:
             log.warning("malformed event: %s", e)
             return
 
-        changed = lot_state.apply_sensor_update(
+        received_wall_ts = lot_state.apply_sensor_update(
             spot_id, zone_id, state, lamport_ts, wall_ts, raw, leader_mac,
         )
-        if changed:
+        if received_wall_ts is not None:
             asyncio.run_coroutine_threadsafe(
-                manager.broadcast_spot_change(spot_id, state, lamport_ts, wall_ts),
+                manager.broadcast_spot_change(spot_id, state, lamport_ts, received_wall_ts, raw),
                 self._loop,
             )
 

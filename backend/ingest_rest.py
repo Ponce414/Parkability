@@ -34,16 +34,17 @@ class LeaderChange(BaseModel):
 
 @router.post("/event")
 async def ingest_event(evt: SensorEvent) -> dict:
-    changed = lot_state.apply_sensor_update(
+    received_wall_ts = lot_state.apply_sensor_update(
         evt.spot_id, evt.zone_id, evt.state,
         evt.lamport_ts, evt.wall_ts,
         evt.raw_distance_mm, evt.leader_mac,
     )
-    if changed:
+    if received_wall_ts is not None:
         await manager.broadcast_spot_change(
-            evt.spot_id, evt.state, evt.lamport_ts, evt.wall_ts,
+            evt.spot_id, evt.state, evt.lamport_ts, received_wall_ts,
+            evt.raw_distance_mm,
         )
-    return {"changed": changed}
+    return {"changed": received_wall_ts is not None}
 
 
 @router.post("/leader")

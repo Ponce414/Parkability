@@ -24,6 +24,7 @@
 #include "aggregator.h"
 
 #include <string.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"

@@ -21,6 +21,7 @@
 #include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
+#include "esp_idf_version.h"
 #include "driver/i2c.h"
 
 #include "config.h"
@@ -39,6 +40,8 @@ static uint8_t  g_window[DEBOUNCE_WINDOW];
 static uint8_t  g_window_idx = 0;
 static uint8_t  g_window_filled = 0;
 static SpotState g_last_state = SPOT_UNKNOWN;
+static uint32_t g_last_telemetry_ms = 0;
+static uint32_t g_last_range_error_log_ms = 0;
 
 /* ------------------------------------------------------------------------
  * I2C + VL53L0X
@@ -121,13 +124,31 @@ static void wifi_init_for_espnow(void)
     ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE));
 }
 
+static void log_espnow_send_failure(const uint8_t *mac)
+{
+    if (mac) {
+        ESP_LOGW(TAG, "espnow send failed to %02x:%02x:%02x:%02x:%02x:%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
+        ESP_LOGW(TAG, "espnow send failed");
+    }
+}
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+static void on_espnow_send(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
+{
+    if (status != ESP_NOW_SEND_SUCCESS) {
+        log_espnow_send_failure(tx_info ? tx_info->des_addr : NULL);
+    }
+}
+#else
 static void on_espnow_send(const uint8_t *mac, esp_now_send_status_t status)
 {
     if (status != ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGW(TAG, "espnow send failed to %02x:%02x:%02x:%02x:%02x:%02x",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        log_espnow_send_failure(mac);
     }
 }
+#endif
 
 /* Forward declaration; defined below. */
 static void send_register(void);
@@ -254,10 +275,19 @@ static SpotState debounce_step(uint8_t raw_occupied)
 static void sensor_task(void *arg)
 {
     while (1) {
+        uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
         uint16_t mm = 0;
         esp_err_t err = vl53l0x_read_range_mm(&mm);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "range read failed: %d", err);
+            if ((uint32_t)(now_ms - g_last_range_error_log_ms) >= TELEMETRY_INTERVAL_MS) {
+                ESP_LOGW(TAG, "range read failed: %d", err);
+                g_last_range_error_log_ms = now_ms;
+            }
+            if ((uint32_t)(now_ms - g_last_telemetry_ms) >= TELEMETRY_INTERVAL_MS) {
+                ESP_LOGI(TAG, "telemetry refresh state=%d (range failed)", SPOT_UNKNOWN);
+                send_sensor_update(SPOT_UNKNOWN, 0);
+                g_last_telemetry_ms = now_ms;
+            }
             vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
             continue;
         }
@@ -265,10 +295,17 @@ static void sensor_task(void *arg)
         uint8_t raw_occupied = (mm > 0 && mm < OCCUPANCY_THRESHOLD_MM) ? 1 : 0;
         SpotState new_state = debounce_step(raw_occupied);
 
-        if (new_state != g_last_state && new_state != SPOT_UNKNOWN) {
-            ESP_LOGI(TAG, "state change %d -> %d (%u mm)", g_last_state, new_state, mm);
+        if (new_state != SPOT_UNKNOWN &&
+            (new_state != g_last_state ||
+             (uint32_t)(now_ms - g_last_telemetry_ms) >= TELEMETRY_INTERVAL_MS)) {
+            if (new_state != g_last_state) {
+                ESP_LOGI(TAG, "state change %d -> %d (%u mm)", g_last_state, new_state, mm);
+            } else {
+                ESP_LOGI(TAG, "telemetry refresh state=%d (%u mm)", new_state, mm);
+            }
             g_last_state = new_state;
             send_sensor_update(new_state, mm);
+            g_last_telemetry_ms = now_ms;
         }
 
         vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));

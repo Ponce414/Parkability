@@ -9,6 +9,7 @@ backend state converges. See concepts/05-consistency-replication/.
 """
 from __future__ import annotations
 
+import time
 from typing import Optional
 from threading import RLock
 
@@ -35,8 +36,9 @@ class LotState:
                         "zone_id": zone["zone_id"],
                         "state": s["current_state"],
                         "lamport_ts": s["last_lamport_ts"],
-                        "wall_ts": s["last_update_wall_ts"],
-                        "raw_distance_mm": None,
+                        "device_wall_ts": s["last_update_wall_ts"],
+                        "received_wall_ts": s["last_update_wall_ts"],
+                        "raw_distance_mm": s["last_raw_distance_mm"],
                     }
 
     def apply_sensor_update(
@@ -48,36 +50,38 @@ class LotState:
         wall_ts: int,
         raw_distance_mm: Optional[int],
         leader_mac: Optional[str],
-    ) -> bool:
-        """Returns True if this update changed the stored state (i.e., clients
-        should be notified). False if it was a duplicate or an out-of-order
-        older message."""
+    ) -> Optional[int]:
+        """Apply a sensor update.
+
+        Returns the backend receive timestamp if the update was accepted, or
+        None if it was a duplicate/out-of-order older message.
+        """
+        received_wall_ts = int(time.time() * 1000)
         with self._lock:
             prev = self._spots.get(spot_id)
             # Reject strictly-older updates by Lamport time. Equal timestamps
-            # fall back to wall_ts for determinism.
+            # fall back to device wall_ts for determinism.
             if prev is not None:
                 if lamport_ts < prev["lamport_ts"]:
-                    return False
-                if lamport_ts == prev["lamport_ts"] and wall_ts <= prev["wall_ts"]:
-                    return False
-
-            changed = prev is None or prev["state"] != state
+                    return None
+                if lamport_ts == prev["lamport_ts"] and wall_ts <= prev["device_wall_ts"]:
+                    return None
 
             self._spots[spot_id] = {
                 "zone_id": zone_id,
                 "state": state,
                 "lamport_ts": lamport_ts,
-                "wall_ts": wall_ts,
+                "device_wall_ts": wall_ts,
+                "received_wall_ts": received_wall_ts,
                 "raw_distance_mm": raw_distance_mm,
             }
 
         # Writes outside the lock — SQLite serializes at its own layer.
         db.ensure_zone(zone_id, zone_id.split("/")[0] if "/" in zone_id else "lotA")
-        db.upsert_spot(spot_id, zone_id, state, lamport_ts, wall_ts, raw_distance_mm)
+        db.upsert_spot(spot_id, zone_id, state, lamport_ts, received_wall_ts, raw_distance_mm)
         db.record_event(spot_id, state, lamport_ts, wall_ts, raw_distance_mm, leader_mac)
 
-        return changed
+        return received_wall_ts
 
     def apply_leader_change(self, zone_id: str, new_leader_mac: str) -> None:
         with self._lock:
@@ -97,8 +101,9 @@ class LotState:
                 z["spots"].append({
                     "spot_id": spot_id,
                     "state": s["state"],
-                    "last_update": s["wall_ts"],
+                    "last_update": s["received_wall_ts"],
                     "lamport_ts": s["lamport_ts"],
+                    "raw_distance_mm": s["raw_distance_mm"],
                 })
             return {"zones": list(zones.values())}
 

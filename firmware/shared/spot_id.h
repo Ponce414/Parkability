@@ -31,7 +31,7 @@ int spot_id_parse(const char *id,
                   char *zone_out,  uint8_t zone_cap,
                   char *spot_out,  uint8_t spot_cap);
 
-/* True if `id` matches the `lot/zone/*` prefix — used by leaders to decide
+/* True if `id` matches the `lot/zone/...` prefix — used by leaders to decide
  * whether an incoming Register belongs to their zone. */
 int spot_id_belongs_to_zone(const char *id, const char *lot, const char *zone);
 

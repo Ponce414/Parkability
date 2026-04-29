@@ -47,11 +47,15 @@ def upsert_spot(
     zone_id: str,
     state: str,
     lamport_ts: int,
-    wall_ts: int,
+    received_wall_ts: int,
     raw_distance_mm: Optional[int],
 ) -> None:
-    """Idempotent write. Last-writer-wins by wall_ts, which is fine because
-    events still preserves full history."""
+    """Idempotent write of the current view.
+
+    `received_wall_ts` is backend receive time, so the dashboard can show
+    useful relative freshness even though device `wall_ts` is uptime-based.
+    The append-only events table still preserves the raw device timestamp.
+    """
     with connect() as conn:
         conn.execute(
             """
@@ -64,7 +68,7 @@ def upsert_spot(
                 last_lamport_ts      = excluded.last_lamport_ts,
                 last_raw_distance_mm = excluded.last_raw_distance_mm
             """,
-            (spot_id, zone_id, state, wall_ts, lamport_ts, raw_distance_mm),
+            (spot_id, zone_id, state, received_wall_ts, lamport_ts, raw_distance_mm),
         )
 
 
@@ -111,7 +115,8 @@ def get_lot_snapshot(lot_id: str) -> dict:
         result = {"lot_id": lot_id, "zones": []}
         for z in zones:
             spots = conn.execute(
-                """SELECT spot_id, current_state, last_update_wall_ts, last_lamport_ts
+                """SELECT spot_id, current_state, last_update_wall_ts,
+                          last_lamport_ts, last_raw_distance_mm
                      FROM spots WHERE zone_id = ?""",
                 (z["zone_id"],),
             ).fetchall()
@@ -132,7 +137,8 @@ def get_zone_snapshot(zone_id: str) -> dict:
         if z is None:
             return {}
         spots = conn.execute(
-            """SELECT spot_id, current_state, last_update_wall_ts, last_lamport_ts
+            """SELECT spot_id, current_state, last_update_wall_ts,
+                      last_lamport_ts, last_raw_distance_mm
                  FROM spots WHERE zone_id = ?""",
             (zone_id,),
         ).fetchall()

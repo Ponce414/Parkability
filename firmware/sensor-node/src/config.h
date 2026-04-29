@@ -28,6 +28,10 @@
  * less power, but slower detection. */
 #define POLL_INTERVAL_MS        100
 
+/* Send a telemetry refresh even when occupancy does not change, so the
+ * dashboard can display live distance and freshness. */
+#define TELEMETRY_INTERVAL_MS   10000
+
 /* Debounce: require this many consecutive readings agreeing before changing
  * state. Guards against momentary beams and flicker at the threshold. */
 #define DEBOUNCE_COUNT          3
@@ -37,13 +41,12 @@
 
 /* --- Radio --------------------------------------------------------------- */
 /* ESP-NOW peer: zone leader's STA MAC address.
- * TODO(embedded team): replace with actual leader MAC after pairing procedure.
- * Using all-zeros is intentional — espnow_send will fail loudly. */
-#define LEADER_MAC { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+ * Current bring-up C5 base MAC: 3c:dc:75:88:fa:4c. */
+#define LEADER_MAC { 0x3c, 0xdc, 0x75, 0x88, 0xfa, 0x4c }
 
 /* WiFi channel used for ESP-NOW. Must match the leader's channel.
  * Channel 1 is a safe default in North America. */
-#define ESPNOW_CHANNEL 1
+#define ESPNOW_CHANNEL 11
 
 /* --- I2C ----------------------------------------------------------------- */
 /* C3 SuperMini default I2C pins. CONFIRM against your specific board's pinout

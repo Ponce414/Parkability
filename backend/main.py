@@ -70,7 +70,9 @@ async def ws_endpoint(ws: WebSocket) -> None:
          (we don't currently accept any inbound commands)
     """
     snap = lot_state.snapshot()
-    await manager.connect(ws, snap, DEFAULT_LOT_ID)
+    connected = await manager.connect(ws, snap, DEFAULT_LOT_ID)
+    if not connected:
+        return
     try:
         while True:
             await ws.receive_text()  # discard; just detecting disconnects

@@ -15,7 +15,12 @@ import { useLotState } from './useLotState'
  *     for compatibility with components that still reference them.
  */
 
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws'
+function defaultWsUrl() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.hostname}:8000/ws`
+}
+
+const WS_URL = import.meta.env.VITE_WS_URL || defaultWsUrl()
 const EVENT_LOG_MAX = 8
 
 function shortSpotId(spotId) {
@@ -32,7 +37,7 @@ function adaptSpot(s) {
     displayId: shortSpotId(s.spotId),
     occupied: s.state === 'OCCUPIED',
     sensorOnline: s.state === 'OCCUPIED' || s.state === 'FREE',
-    distance: null, // raw distance isn't pushed over WS today
+    distance: s.rawDistanceMm ?? null,
     lastUpdated: s.lastUpdate ? new Date(s.lastUpdate).toISOString() : null,
   }
 }
@@ -77,8 +82,14 @@ export function useParkingData() {
 
   const [events, setEvents] = useState([])
   const [lastRefresh, setLastRefresh] = useState(null)
+  const [clockTick, setClockTick] = useState(() => Date.now())
   const prevStateRef = useRef(new Map()) // spotId -> state
   const prevLeaderRef = useRef(new Map()) // zoneId -> mac
+
+  useEffect(() => {
+    const id = window.setInterval(() => setClockTick(Date.now()), 10000)
+    return () => window.clearInterval(id)
+  }, [])
 
   // Flatten zones->spots for the UI.
   const allSpots = useMemo(
@@ -147,21 +158,25 @@ export function useParkingData() {
 
   const snapshot = useMemo(() => {
     const leaderMacs = (lotState.zones || []).map((z) => z.leaderMac).filter(Boolean)
+    const newestSpotUpdate = allSpots.reduce((latest, spot) => {
+      return Math.max(latest, Number(spot.lastUpdate) || 0)
+    }, 0)
     return {
       spots: allSpots.map(adaptSpot),
       gateway: {
         online: connectionStatus === 'connected',
-        lastSync: lastRefresh,
+        lastSync: newestSpotUpdate ? new Date(newestSpotUpdate).toISOString() : lastRefresh,
         leaders: leaderMacs,
       },
       events,
       meta: {
         mode: 'live',
         source: connectionStatus === 'connected' ? 'WebSocket push' : 'Reconnecting',
-        lastIngestedAt: lastRefresh,
+        lastIngestedAt: newestSpotUpdate ? new Date(newestSpotUpdate).toISOString() : lastRefresh,
+        clockTick,
       },
     }
-  }, [allSpots, connectionStatus, lastRefresh, events, lotState.zones])
+  }, [allSpots, connectionStatus, lastRefresh, events, lotState.zones, clockTick])
 
   const derived = useMemo(() => buildDerivedState(snapshot), [snapshot])
 

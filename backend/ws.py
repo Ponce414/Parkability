@@ -22,16 +22,21 @@ class WSManager:
         self._clients: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
 
-    async def connect(self, ws: WebSocket, snapshot: dict, lot_id: str) -> None:
+    async def connect(self, ws: WebSocket, snapshot: dict, lot_id: str) -> bool:
         await ws.accept()
-        async with self._lock:
-            self._clients.add(ws)
         payload = {
             "type": "zone_status",
             "lot_id": lot_id,
             "zones": snapshot["zones"],
         }
-        await ws.send_text(json.dumps(payload))
+        try:
+            await ws.send_text(json.dumps(payload))
+        except Exception as e:
+            log.warning("client disconnected during initial snapshot: %s", e)
+            return False
+        async with self._lock:
+            self._clients.add(ws)
+        return True
 
     async def disconnect(self, ws: WebSocket) -> None:
         async with self._lock:
@@ -43,6 +48,7 @@ class WSManager:
         state: str,
         lamport_ts: int,
         wall_ts: int,
+        raw_distance_mm: int | None = None,
     ) -> None:
         payload = json.dumps({
             "type": "spot_state_changed",
@@ -50,6 +56,7 @@ class WSManager:
             "state": state,
             "lamport_ts": lamport_ts,
             "wall_ts": wall_ts,
+            "raw_distance_mm": raw_distance_mm,
         })
         stale: list[WebSocket] = []
         async with self._lock:

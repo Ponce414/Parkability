@@ -1,7 +1,11 @@
-.PHONY: sensor-build sensor-flash leader-build leader-flash backend-run backend-install app-run app-install db-init help
+LEADER_PORT ?= /dev/cu.usbmodem1101
+SENSOR_PORT ?= /dev/cu.usbmodem101
+
+.PHONY: sensor-build sensor-flash sensor-c3-build sensor-c3-flash leader-build leader-flash leader-c5-build leader-c5-flash backend-run backend-install app-run app-install db-init help
 
 help:
 	@echo "Firmware: sensor-build, sensor-flash, leader-build, leader-flash"
+	@echo "IDF/C5:   leader-c5-build, leader-c5-flash, sensor-c3-build, sensor-c3-flash"
 	@echo "Backend:  backend-install, db-init, backend-run"
 	@echo "App:      app-install, app-run"
 
@@ -16,6 +20,18 @@ leader-build:
 
 leader-flash:
 	cd firmware/leader-node && pio run --target upload
+
+sensor-c3-build:
+	cd firmware/sensor-node && idf.py -B build-c3 -DIDF_TARGET=esp32c3 build
+
+sensor-c3-flash:
+	cd firmware/sensor-node && idf.py -B build-c3 -DIDF_TARGET=esp32c3 -p $(SENSOR_PORT) flash
+
+leader-c5-build:
+	cd firmware/leader-node && idf.py -B build-c5 -DIDF_TARGET=esp32c5 -DSDKCONFIG_DEFAULTS=sdkconfig.defaults build
+
+leader-c5-flash:
+	cd firmware/leader-node && idf.py -B build-c5 -DIDF_TARGET=esp32c5 -DSDKCONFIG_DEFAULTS=sdkconfig.defaults -p $(LEADER_PORT) flash
 
 backend-install:
 	cd backend && pip install -r requirements.txt

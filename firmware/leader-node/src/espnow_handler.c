@@ -4,6 +4,7 @@
 #include "esp_now.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
+#include "esp_idf_version.h"
 
 #include "messages.h"
 #include "lamport.h"
@@ -68,12 +69,31 @@ static void on_recv(const esp_now_recv_info_t *info, const uint8_t *data, int le
     }
 }
 
-static void on_send(const uint8_t *mac, esp_now_send_status_t status)
+static void log_send_failure(const uint8_t *mac)
 {
-    if (status != ESP_NOW_SEND_SUCCESS) {
+    if (mac) {
+        ESP_LOGW(TAG, "send failed to %02x:%02x:%02x:%02x:%02x:%02x",
+                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    } else {
         ESP_LOGW(TAG, "send failed");
     }
 }
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+static void on_send(const esp_now_send_info_t *tx_info, esp_now_send_status_t status)
+{
+    if (status != ESP_NOW_SEND_SUCCESS) {
+        log_send_failure(tx_info ? tx_info->des_addr : NULL);
+    }
+}
+#else
+static void on_send(const uint8_t *mac, esp_now_send_status_t status)
+{
+    if (status != ESP_NOW_SEND_SUCCESS) {
+        log_send_failure(mac);
+    }
+}
+#endif
 
 void espnow_handler_init(void)
 {

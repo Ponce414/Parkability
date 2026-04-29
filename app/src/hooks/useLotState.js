@@ -34,6 +34,7 @@ export function useLotState(wsUrl) {
             state: s.state || s.current_state,
             lastUpdate: s.last_update ?? s.last_update_wall_ts,
             lamportTs: s.lamport_ts ?? s.last_lamport_ts,
+            rawDistanceMm: s.raw_distance_mm ?? s.last_raw_distance_mm ?? null,
           })),
         })),
       });
@@ -44,12 +45,24 @@ export function useLotState(wsUrl) {
           const spots = z.spots.map(s => {
             if (s.spotId === msg.spot_id) {
               touched = true;
-              return { ...s, state: msg.state, lastUpdate: msg.wall_ts, lamportTs: msg.lamport_ts };
+              return {
+                ...s,
+                state: msg.state,
+                lastUpdate: msg.wall_ts,
+                lamportTs: msg.lamport_ts,
+                rawDistanceMm: msg.raw_distance_mm ?? s.rawDistanceMm ?? null,
+              };
             }
             return s;
           });
           if (!touched && msg.spot_id.startsWith(`${prev.lotId}/${z.zoneId}/`)) {
-            spots.push({ spotId: msg.spot_id, state: msg.state, lastUpdate: msg.wall_ts, lamportTs: msg.lamport_ts });
+            spots.push({
+              spotId: msg.spot_id,
+              state: msg.state,
+              lastUpdate: msg.wall_ts,
+              lamportTs: msg.lamport_ts,
+              rawDistanceMm: msg.raw_distance_mm ?? null,
+            });
           }
           return { ...z, spots };
         });

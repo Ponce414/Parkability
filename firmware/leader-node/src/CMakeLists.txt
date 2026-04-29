@@ -1,0 +1,21 @@
+idf_component_register(
+    SRCS
+        "aggregator.c"
+        "bully.c"
+        "espnow_handler.c"
+        "heartbeat.c"
+        "main.c"
+        "radio_scheduler.c"
+        "wifi_uplink.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_event
+        esp_http_client
+        esp_netif
+        esp_timer
+        esp_wifi
+        nvs_flash
+        shared
+        wpa_supplicant
+)

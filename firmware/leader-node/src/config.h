@@ -10,32 +10,74 @@
 
 #include <stdint.h>
 
+#if __has_include("config.local.h")
+#include "config.local.h"
+#endif
+
 /* --- Identity ------------------------------------------------------------
  * Each leader covers one zone in one lot. Set per flashed device. */
+#ifndef ZONE_LOT
 #define ZONE_LOT   "lotA"
+#endif
+#ifndef ZONE_ID
 #define ZONE_ID    "zone1"
+#endif
 
 /* --- WiFi ----------------------------------------------------------------
- * Leader connects to this AP to reach the backend. */
-#define WIFI_SSID     "parking-lot-net"
-#define WIFI_PASSWORD "change-me"
+ * Leader connects to this AP to reach the backend.
+ * Put real local credentials in ignored config.local.h. */
+#ifndef WIFI_SECURITY_ENTERPRISE
+#define WIFI_SECURITY_ENTERPRISE 1
+#endif
+
+#ifndef WIFI_SSID
+#define WIFI_SSID "eduroam"
+#endif
+
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD ""
+#endif
+
+#ifndef WIFI_EAP_IDENTITY
+#define WIFI_EAP_IDENTITY "your.email@student.csulb.edu"
+#endif
+
+#ifndef WIFI_EAP_USERNAME
+#define WIFI_EAP_USERNAME WIFI_EAP_IDENTITY
+#endif
+
+#ifndef WIFI_EAP_PASSWORD
+#define WIFI_EAP_PASSWORD ""
+#endif
+
+#ifndef WIFI_EAP_USE_DEFAULT_CERT_BUNDLE
+#define WIFI_EAP_USE_DEFAULT_CERT_BUNDLE 1
+#endif
+
+#ifndef WIFI_EAP_SERVER_DOMAIN
+#define WIFI_EAP_SERVER_DOMAIN ""
+#endif
 
 /* --- Backend uplink -----------------------------------------------------
- * Compile-time switch picks the transport. Default: MQTT. */
-#define UPLINK_PROTOCOL_MQTT 1
-/* #define UPLINK_PROTOCOL_REST 1 */
+ * Compile-time switch picks the transport. Default for local bring-up: REST. */
+/* #define UPLINK_PROTOCOL_MQTT 1 */
+#define UPLINK_PROTOCOL_REST 1
 
 /* MQTT broker (used when UPLINK_PROTOCOL_MQTT). */
 #define MQTT_BROKER_HOST "192.168.1.10"
 #define MQTT_BROKER_PORT 1883
 
 /* REST backend (used when UPLINK_PROTOCOL_REST). */
-#define REST_BACKEND_HOST "192.168.1.10"
+#ifndef REST_BACKEND_HOST
+#define REST_BACKEND_HOST "10.39.11.180"
+#endif
+#ifndef REST_BACKEND_PORT
 #define REST_BACKEND_PORT 8000
+#endif
 
 /* --- Radio --------------------------------------------------------------
  * Must match sensor-node's ESPNOW_CHANNEL. */
-#define ESPNOW_CHANNEL 1
+#define ESPNOW_CHANNEL 11
 
 /* Radio scheduler tunables (inactivity-based strategy).
  *  - Stay in ESP-NOW mode until either the aggregator requests WiFi
