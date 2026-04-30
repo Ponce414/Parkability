@@ -11,7 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from state import lot_state
+from state import lot_state, normalize_state_from_distance
 from ws import manager
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -34,15 +34,16 @@ class LeaderChange(BaseModel):
 
 @router.post("/event")
 async def ingest_event(evt: SensorEvent) -> dict:
+    state = normalize_state_from_distance(evt.state, evt.raw_distance_mm)
     received_wall_ts = lot_state.apply_sensor_update(
-        evt.spot_id, evt.zone_id, evt.state,
+        evt.spot_id, evt.zone_id, state,
         evt.lamport_ts, evt.wall_ts,
         evt.raw_distance_mm, evt.leader_mac,
     )
     if received_wall_ts is not None:
         await manager.broadcast_spot_change(
-            evt.spot_id, evt.state, evt.lamport_ts, received_wall_ts,
-            evt.raw_distance_mm,
+            evt.spot_id, state, evt.lamport_ts, received_wall_ts,
+            evt.raw_distance_mm, evt.leader_mac,
         )
     return {"changed": received_wall_ts is not None}
 

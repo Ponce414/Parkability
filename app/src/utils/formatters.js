@@ -52,6 +52,15 @@ export function getSpotVisualState(spot) {
     }
   }
 
+  if (spot.state === 'UNKNOWN') {
+    return {
+      label: 'No reading',
+      colorClass: 'from-amber-400/80 to-orange-600/90',
+      glowClass: 'shadow-orange-950/60',
+      accentClass: 'text-warning',
+    }
+  }
+
   return {
     label: 'Available',
     colorClass: 'from-emerald-400/80 to-lime/90',

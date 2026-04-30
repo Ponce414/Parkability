@@ -4,14 +4,14 @@
  * Connection lifecycle:
  *   wifi_uplink_init -> esp_wifi_set_config + esp_wifi_connect
  *   on WIFI_EVENT_STA_DISCONNECTED -> esp_wifi_connect (auto retry)
- *   on IP_EVENT_STA_GOT_IP -> mark transport ready, init MQTT (if MQTT mode)
+ *   on IP_EVENT_STA_GOT_IP -> mark transport ready
  *
  * Publish path:
  *   - Caller (aggregator) calls wifi_uplink_publish_update
  *   - We check radio_scheduler_current_mode() — if not WiFi, return -1
  *     so the aggregator can hold the message
  *   - Build a small JSON payload
- *   - MQTT: esp_mqtt_client_publish to "parking/<lot>/<zone>/events"
+ *   - MQTT: publish to "parking/<lot>/<zone>/events"
  *   - REST: esp_http_client POST to /ingest/event
  */
 
@@ -19,11 +19,16 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
+#include <unistd.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
+#include "esp_random.h"
 #include "esp_http_client.h"
+#include "lwip/sockets.h"
+#include "lwip/netdb.h"
 
 #include "config.h"
 #include "radio_scheduler.h"
@@ -32,19 +37,12 @@
 #include "esp_eap_client.h"
 #endif
 
-#if defined(UPLINK_PROTOCOL_MQTT)
-#include "mqtt_client.h"
-#endif
-
 static const char *TAG = "uplink";
 
 static volatile int g_wifi_connected = 0;
 static volatile int g_transport_ready = 0;
+static uint32_t g_mqtt_connect_seq = 0;
 static int g_scan_logged = 0;
-
-#if defined(UPLINK_PROTOCOL_MQTT)
-static esp_mqtt_client_handle_t g_mqtt = NULL;
-#endif
 
 static void log_matching_aps_once(const char *ssid)
 {
@@ -98,34 +96,10 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         const ip_event_got_ip_t *event = (const ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "wifi got IP " IPSTR, IP2STR(&event->ip_info.ip));
         g_wifi_connected = 1;
-#if defined(UPLINK_PROTOCOL_MQTT)
-        if (g_mqtt) {
-            esp_mqtt_client_start(g_mqtt);
-        }
-#else
-        /* REST has no persistent connection — mark ready as soon as we have IP. */
+        /* MQTT and REST both create connections per publish in this firmware. */
         g_transport_ready = 1;
-#endif
     }
 }
-
-#if defined(UPLINK_PROTOCOL_MQTT)
-static void on_mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    switch ((esp_mqtt_event_id_t)id) {
-    case MQTT_EVENT_CONNECTED:
-        ESP_LOGI(TAG, "mqtt connected");
-        g_transport_ready = 1;
-        break;
-    case MQTT_EVENT_DISCONNECTED:
-        ESP_LOGW(TAG, "mqtt disconnected");
-        g_transport_ready = 0;
-        break;
-    default:
-        break;
-    }
-}
-#endif
 
 /* ----------------------------------------------------------------------
  * Init
@@ -150,10 +124,15 @@ void wifi_uplink_init(const char *ssid, const char *password)
     wcfg.sta.threshold.authmode = WIFI_AUTH_WPA2_ENTERPRISE;
     wcfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
     wcfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
-    wcfg.sta.channel = ESPNOW_CHANNEL;
+    wcfg.sta.channel = 0;
 #else
     strncpy((char *)wcfg.sta.password, password, sizeof(wcfg.sta.password) - 1);
-    wcfg.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wcfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    wcfg.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+    wcfg.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    wcfg.sta.channel = 0;
+    wcfg.sta.pmf_cfg.capable = true;
+    wcfg.sta.pmf_cfg.required = false;
 #endif
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wcfg));
 
@@ -188,17 +167,10 @@ void wifi_uplink_init(const char *ssid, const char *password)
     esp_wifi_connect();
 
 #if defined(UPLINK_PROTOCOL_MQTT)
-    char uri[64];
-    snprintf(uri, sizeof(uri), "mqtt://%s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
-    esp_mqtt_client_config_t mcfg = { 0 };
-    mcfg.broker.address.uri = uri;
-    g_mqtt = esp_mqtt_client_init(&mcfg);
-    ESP_ERROR_CHECK(esp_mqtt_client_register_event(
-        g_mqtt, ESP_EVENT_ANY_ID, on_mqtt_event, NULL));
-    /* esp_mqtt_client_start is called once we have an IP. */
-    ESP_LOGI(TAG, "uplink init MQTT %s", uri);
+    ESP_LOGI(TAG, "uplink init MQTT mqtt://%s:%d", MQTT_BROKER_HOST, MQTT_BROKER_PORT);
 #else
-    ESP_LOGI(TAG, "uplink init REST http://%s:%d", REST_BACKEND_HOST, REST_BACKEND_PORT);
+    ESP_LOGI(TAG, "uplink init REST http://%s:%d (ssid=%s pass_len=%u)",
+             REST_BACKEND_HOST, REST_BACKEND_PORT, ssid, (unsigned)strlen(password));
 #endif
 }
 
@@ -249,6 +221,145 @@ static int rest_post(const char *path, const char *json)
 }
 #endif
 
+#if defined(UPLINK_PROTOCOL_MQTT)
+static int write_all(int sock, const uint8_t *buf, size_t len)
+{
+    while (len > 0) {
+        int n = send(sock, buf, len, 0);
+        if (n <= 0) return -1;
+        buf += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
+static size_t encode_remaining_length(uint8_t *out, size_t len)
+{
+    size_t i = 0;
+    do {
+        uint8_t encoded = (uint8_t)(len % 128);
+        len /= 128;
+        if (len > 0) encoded |= 128;
+        out[i++] = encoded;
+    } while (len > 0 && i < 4);
+    return i;
+}
+
+static size_t write_utf8(uint8_t *out, const char *s)
+{
+    size_t len = strlen(s);
+    out[0] = (uint8_t)(len >> 8);
+    out[1] = (uint8_t)(len & 0xff);
+    memcpy(out + 2, s, len);
+    return len + 2;
+}
+
+static int mqtt_connect_socket(void)
+{
+    char port_str[8];
+    snprintf(port_str, sizeof(port_str), "%d", MQTT_BROKER_PORT);
+
+    struct addrinfo hints = {0};
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_INET;
+
+    struct addrinfo *res = NULL;
+    int err = getaddrinfo(MQTT_BROKER_HOST, port_str, &hints, &res);
+    if (err != 0 || !res) {
+        ESP_LOGW(TAG, "mqtt dns failed host=%s err=%d", MQTT_BROKER_HOST, err);
+        return -1;
+    }
+
+    int sock = -1;
+    for (struct addrinfo *p = res; p; p = p->ai_next) {
+        sock = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if (sock < 0) continue;
+
+        struct timeval timeout = { .tv_sec = 5, .tv_usec = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+        if (connect(sock, p->ai_addr, p->ai_addrlen) == 0) {
+            break;
+        }
+        close(sock);
+        sock = -1;
+    }
+    freeaddrinfo(res);
+    if (sock < 0) {
+        ESP_LOGW(TAG, "mqtt connect failed errno=%d", errno);
+        return -1;
+    }
+
+    uint8_t pkt[128];
+    uint8_t *body = pkt + 5;
+    size_t n = 0;
+    n += write_utf8(body + n, "MQTT");
+    body[n++] = 4;       /* MQTT 3.1.1 */
+    body[n++] = 0x02;    /* clean session */
+    body[n++] = 0;
+    body[n++] = 60;      /* keepalive seconds */
+    uint8_t mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char client_id[64];
+    snprintf(client_id, sizeof(client_id),
+             "parkability-%02X%02X%02X%02X%02X%02X-%lu-%08lx",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+             (unsigned long)g_mqtt_connect_seq++,
+             (unsigned long)esp_random());
+    n += write_utf8(body + n, client_id);
+
+    pkt[0] = 0x10;       /* CONNECT */
+    size_t rem_len = encode_remaining_length(pkt + 1, n);
+    memmove(pkt + 1 + rem_len, body, n);
+    if (write_all(sock, pkt, 1 + rem_len + n) != 0) {
+        close(sock);
+        return -1;
+    }
+
+    uint8_t ack[4] = {0};
+    int got = recv(sock, ack, sizeof(ack), 0);
+    if (got != 4 || ack[0] != 0x20 || ack[1] != 0x02 || ack[3] != 0x00) {
+        ESP_LOGW(TAG, "mqtt connack failed got=%d ack=%02x %02x %02x %02x code=%u",
+                 got, ack[0], ack[1], ack[2], ack[3], got >= 4 ? ack[3] : 255);
+        close(sock);
+        return -1;
+    }
+    return sock;
+}
+
+static int mqtt_publish(const char *topic, const char *json, int retain)
+{
+    int sock = mqtt_connect_socket();
+    if (sock < 0) return -1;
+
+    size_t topic_len = strlen(topic);
+    size_t json_len = strlen(json);
+    size_t remaining = 2 + topic_len + json_len;
+    uint8_t hdr[5];
+    hdr[0] = retain ? 0x31 : 0x30;  /* PUBLISH QoS0 */
+    size_t rem_len = encode_remaining_length(hdr + 1, remaining);
+
+    uint8_t topic_hdr[2] = {
+        (uint8_t)(topic_len >> 8),
+        (uint8_t)(topic_len & 0xff),
+    };
+
+    int rc = 0;
+    if (write_all(sock, hdr, 1 + rem_len) != 0 ||
+        write_all(sock, topic_hdr, sizeof(topic_hdr)) != 0 ||
+        write_all(sock, (const uint8_t *)topic, topic_len) != 0 ||
+        write_all(sock, (const uint8_t *)json, json_len) != 0) {
+        rc = -1;
+    }
+
+    uint8_t disconnect[2] = {0xe0, 0x00};
+    write_all(sock, disconnect, sizeof(disconnect));
+    close(sock);
+    return rc;
+}
+#endif
+
 int wifi_uplink_publish_update(const SensorUpdate *update,
                                const char *leader_mac_str)
 {
@@ -267,8 +378,7 @@ int wifi_uplink_publish_update(const SensorUpdate *update,
 #if defined(UPLINK_PROTOCOL_MQTT)
     char topic[64];
     snprintf(topic, sizeof(topic), "parking/%s/%s/events", ZONE_LOT, ZONE_ID);
-    int id = esp_mqtt_client_publish(g_mqtt, topic, json, 0, 1, 0);
-    return (id >= 0) ? 0 : -1;
+    return mqtt_publish(topic, json, 0);
 #else
     return rest_post("/ingest/event", json);
 #endif
@@ -287,8 +397,7 @@ int wifi_uplink_publish_leader_change(const char *zone_id,
 #if defined(UPLINK_PROTOCOL_MQTT)
     char topic[64];
     snprintf(topic, sizeof(topic), "parking/%s/%s/leader", ZONE_LOT, zone_id);
-    int id = esp_mqtt_client_publish(g_mqtt, topic, json, 0, 1, 1 /* retain */);
-    return (id >= 0) ? 0 : -1;
+    return mqtt_publish(topic, json, 1);
 #else
     return rest_post("/ingest/leader", json);
 #endif

@@ -1,10 +1,11 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { AlertCircle, Search, Signal, TrendingUp } from 'lucide-react'
+import { AlertCircle, RefreshCw, Search, Signal, TrendingUp } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { useParkingData } from '../hooks/useParkingData'
 import { formatTimestamp, getSpotVisualState } from '../utils/formatters'
 import ActivityLog from './ActivityLog'
 import Legend from './Legend'
+import LeaderFailoverPanel from './LeaderFailoverPanel'
 import ParkingLotMap from './ParkingLotMap'
 import SectionHeader from './SectionHeader'
 import StatusPanel from './StatusPanel'
@@ -19,8 +20,20 @@ function statusToneClass(status) {
 }
 
 function Dashboard() {
-  const { snapshot, derived, loading, error, lastRefresh, dataSource, connectionStatus } =
-    useParkingData()
+  const {
+    snapshot,
+    derived,
+    loading,
+    error,
+    refreshError,
+    lastRefresh,
+    dataSource,
+    connectionStatus,
+    refreshNow,
+    isRefreshing,
+    refreshWindowActive,
+    refreshSecondsRemaining,
+  } = useParkingData()
   const [activeFilter, setActiveFilter] = useState('all')
   const [searchValue, setSearchValue] = useState('')
 
@@ -62,7 +75,7 @@ function Dashboard() {
         <SectionHeader
           eyebrow="Live dashboard"
           title="Operational overview for your distributed parking lot"
-          description="Backed by a WebSocket push from the FastAPI backend. Every state change reaches this view within milliseconds — no polling, no client-side staleness."
+          description="Backed by WebSocket push from the FastAPI backend, with an on-demand backend snapshot refresh when you want to re-check the lot."
         />
 
         <div className="mt-10 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -83,8 +96,23 @@ function Dashboard() {
               <Signal className="h-4 w-4" />
               {dataSource}
             </div>
+            <button
+              type="button"
+              onClick={refreshNow}
+              className={`inline-flex min-w-[128px] items-center justify-center gap-2 rounded-full border px-4 py-3 text-sm font-medium shadow-soft transition ${
+                refreshWindowActive
+                  ? 'border-lime/30 bg-lime/10 text-lime'
+                  : 'border-cyan/30 bg-cyan/10 text-cyan hover:border-cyan/60 hover:bg-cyan/15'
+              }`}
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+              {refreshWindowActive ? `Refreshing ${refreshSecondsRemaining}s` : 'Refresh'}
+            </button>
           </div>
         </div>
+        {refreshError ? (
+          <p className="mt-3 text-sm text-coral">{refreshError}</p>
+        ) : null}
 
         <div className="mt-6 flex flex-wrap gap-3">
           {FILTERS.map((filter) => (
@@ -129,6 +157,8 @@ function Dashboard() {
                   </div>
 
                   <div className="space-y-6">
+                    <LeaderFailoverPanel controllerStatus={snapshot.controllerStatus} />
+
                     <div className="rounded-[2rem] border border-slate-200/70 bg-white/80 p-6 shadow-soft backdrop-blur-xl dark:border-white/10 dark:bg-white/5">
                       <p className="text-sm uppercase tracking-[0.32em] text-slate-500 dark:text-slate-400">Control summary</p>
                       <h3 className="mt-2 font-display text-2xl font-semibold text-slate-900 dark:text-white">Lot health snapshot</h3>
@@ -146,7 +176,7 @@ function Dashboard() {
                         <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
                           {[
                             ['Occupancy', `${derived.occupancyRate}% in use`, TrendingUp],
-                            ['Transport', 'WebSocket push', Signal],
+                            ['Transport', refreshWindowActive ? 'Manual refresh' : 'WebSocket push', Signal],
                             ['Last update', formatTimestamp(lastRefresh), Signal],
                           ].map(([label, value, Icon]) => (
                             <div key={label} className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-4 dark:border-white/10 dark:bg-slate-950/45">

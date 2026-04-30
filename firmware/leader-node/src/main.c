@@ -36,6 +36,17 @@ static uint32_t priority_from_mac(const uint8_t mac[6])
          | ((uint32_t)mac[4] << 8)  |  (uint32_t)mac[5];
 }
 
+static void wait_for_wifi_ready(uint32_t timeout_ms)
+{
+    uint32_t waited_ms = 0;
+    while (!wifi_uplink_is_ready() && waited_ms < timeout_ms) {
+        vTaskDelay(pdMS_TO_TICKS(250));
+        waited_ms += 250;
+    }
+    ESP_LOGI(TAG, "wifi preflight %s after %u ms",
+             wifi_uplink_is_ready() ? "ready" : "not ready", (unsigned)waited_ms);
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -58,6 +69,7 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
     esp_wifi_set_country_code("US", true);
 #if CONFIG_SOC_WIFI_SUPPORT_5G
     esp_err_t band_err = esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
@@ -76,11 +88,13 @@ void app_main(void)
              ZONE_LOT, ZONE_ID, (unsigned)my_priority,
              my_mac[0], my_mac[1], my_mac[2], my_mac[3], my_mac[4], my_mac[5]);
 
-    espnow_handler_init();
     aggregator_init();
+    wifi_uplink_init(WIFI_SSID, WIFI_PASSWORD);
+    wait_for_wifi_ready(20000);
+
+    espnow_handler_init();
     bully_init(my_priority);
     heartbeat_init(my_priority);
-    wifi_uplink_init(WIFI_SSID, WIFI_PASSWORD);
     radio_scheduler_start();
 
     /* Main loop: poll heartbeat timeout and drain aggregator. */

@@ -49,6 +49,7 @@ class WSManager:
         lamport_ts: int,
         wall_ts: int,
         raw_distance_mm: int | None = None,
+        leader_mac: str | None = None,
     ) -> None:
         payload = json.dumps({
             "type": "spot_state_changed",
@@ -57,6 +58,7 @@ class WSManager:
             "lamport_ts": lamport_ts,
             "wall_ts": wall_ts,
             "raw_distance_mm": raw_distance_mm,
+            "leader_mac": leader_mac,
         })
         stale: list[WebSocket] = []
         async with self._lock:

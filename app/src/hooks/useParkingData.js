@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLotState } from './useLotState'
 
 /**
@@ -7,12 +7,11 @@ import { useLotState } from './useLotState'
  * distance, lastUpdated; gateway; events; meta).
  *
  * Important contract differences from the original polling version:
- *   - We don't poll. WS pushes state on change; "lastRefresh" is the last
- *     time we observed any spot transition.
+ *   - WS pushes state on change; the Refresh button also polls the backend
+ *     every second for one minute for hands-on sensor checks.
  *   - Events are derived client-side from state transitions, since the
  *     backend WS protocol doesn't push a separate event log.
- *   - Auto-refresh and manual refresh are no-ops; kept on the return type
- *     for compatibility with components that still reference them.
+ *   - "lastRefresh" tracks the newest observed spot update.
  */
 
 function defaultWsUrl() {
@@ -20,8 +19,36 @@ function defaultWsUrl() {
   return `${protocol}//${window.location.hostname}:8000/ws`
 }
 
+function defaultStateUrl() {
+  return `${window.location.protocol}//${window.location.hostname}:8000/lot/lotA/state`
+}
+
 const WS_URL = import.meta.env.VITE_WS_URL || defaultWsUrl()
+const STATE_URL = import.meta.env.VITE_STATE_URL || defaultStateUrl()
 const EVENT_LOG_MAX = 8
+const REFRESH_WINDOW_MS = 60000
+const REFRESH_POLL_MS = 1000
+const OCCUPANCY_THRESHOLD_MM = 30
+const C5_NODES = [
+  {
+    id: 'c5-a',
+    label: 'ESP32-C5 A',
+    shortLabel: 'C5 A',
+    mac: '3C:DC:75:85:A8:D0',
+    homeSpots: ['1', '2', '3'],
+  },
+  {
+    id: 'c5-b',
+    label: 'ESP32-C5 B',
+    shortLabel: 'C5 B',
+    mac: '3C:DC:75:88:FA:4C',
+    homeSpots: ['4', '5', '6'],
+  },
+]
+
+function normalizeMac(mac) {
+  return typeof mac === 'string' && mac ? mac.toUpperCase() : null
+}
 
 function shortSpotId(spotId) {
   // "lotA/zone1/spot17" -> "17"; falls through to whole id otherwise.
@@ -31,14 +58,109 @@ function shortSpotId(spotId) {
   return last.replace(/^spot/, '') || last
 }
 
+function homeNodeForSpot(spot) {
+  return C5_NODES.find((node) => node.homeSpots.includes(String(spot.displayId)))
+}
+
 function adaptSpot(s) {
+  const lastUpdateMs = Number(s.lastUpdate) || 0
+  const sensorOnline = lastUpdateMs > 0 && Date.now() - lastUpdateMs < 30000
+  const distance = s.rawDistanceMm == null ? null : Number(s.rawDistanceMm)
+  const hasDistance = Number.isFinite(distance) && distance > 0
+  const state =
+    s.state !== 'UNKNOWN' && hasDistance
+      ? distance <= OCCUPANCY_THRESHOLD_MM
+        ? 'OCCUPIED'
+        : 'FREE'
+      : s.state
+
   return {
     id: s.spotId,
     displayId: shortSpotId(s.spotId),
-    occupied: s.state === 'OCCUPIED',
-    sensorOnline: s.state === 'OCCUPIED' || s.state === 'FREE',
-    distance: s.rawDistanceMm ?? null,
-    lastUpdated: s.lastUpdate ? new Date(s.lastUpdate).toISOString() : null,
+    zoneId: s.zoneId,
+    state,
+    occupied: state === 'OCCUPIED',
+    sensorOnline,
+    distance: sensorOnline && hasDistance ? distance : null,
+    lastUpdated: lastUpdateMs ? new Date(lastUpdateMs).toISOString() : null,
+    leaderMac: normalizeMac(s.leaderMac),
+  }
+}
+
+function buildControllerStatus(spots, zoneLeaderMacs) {
+  const activeZoneLeaders = zoneLeaderMacs.map(normalizeMac).filter(Boolean)
+  const nodes = C5_NODES.map((node) => {
+    const homeSpots = spots.filter((spot) => node.homeSpots.includes(String(spot.displayId)))
+    const servedSpots = spots.filter((spot) => spot.sensorOnline && spot.leaderMac === node.mac)
+    const actingForSpots = servedSpots.filter((spot) => homeNodeForSpot(spot)?.mac !== node.mac)
+    const failedOverHomeSpots = homeSpots.filter(
+      (spot) => spot.sensorOnline && spot.leaderMac && spot.leaderMac !== node.mac,
+    )
+    const newestServedMs = servedSpots.reduce((latest, spot) => {
+      return Math.max(latest, spot.lastUpdated ? new Date(spot.lastUpdated).getTime() : 0)
+    }, 0)
+    const isCoordinator = activeZoneLeaders.includes(node.mac)
+    const online = isCoordinator || servedSpots.length > 0
+
+    let status = 'No live traffic'
+    let tone = 'warning'
+    if (actingForSpots.length > 0) {
+      status = 'Acting leader'
+      tone = 'lime'
+    } else if (servedSpots.length > 0) {
+      status = isCoordinator ? 'Coordinator' : 'Maintaining'
+      tone = 'cyan'
+    } else if (failedOverHomeSpots.length > 0) {
+      status = 'Failing over'
+      tone = 'coral'
+    } else if (isCoordinator) {
+      status = 'Coordinator idle'
+      tone = 'cyan'
+    }
+
+    return {
+      ...node,
+      online,
+      status,
+      tone,
+      isCoordinator,
+      homeSpots,
+      servedSpots,
+      actingForSpots,
+      failedOverHomeSpots,
+      lastSeen: newestServedMs ? new Date(newestServedMs).toISOString() : null,
+    }
+  })
+
+  const actingNodes = nodes.filter((node) => node.actingForSpots.length > 0)
+  const failedNodes = nodes.filter((node) => node.failedOverHomeSpots.length > 0 && node.servedSpots.length === 0)
+  const onlineCount = nodes.filter((node) => node.online).length
+  const failoverActive = actingNodes.length > 0 || failedNodes.length > 0
+
+  let summary = 'No C5 traffic'
+  let detail = 'Waiting for the leaders to publish fresh spot telemetry.'
+  if (failoverActive) {
+    summary = 'Failover active'
+    const actingText = actingNodes
+      .map((node) => `${node.shortLabel} is carrying ${node.actingForSpots.map((spot) => `spot ${spot.displayId}`).join(', ')}`)
+      .join(' and ')
+    detail = actingText || 'One C5 home group is being served by the other C5.'
+  } else if (onlineCount === C5_NODES.length) {
+    summary = 'Both C5s active'
+    detail = 'Each leader is maintaining live telemetry for its assigned group.'
+  } else if (onlineCount === 1) {
+    summary = 'Single C5 active'
+    detail = 'Only one C5 is visible through live spot telemetry right now.'
+  }
+
+  return {
+    nodes,
+    summary,
+    detail,
+    failoverActive,
+    onlineCount,
+    expectedCount: C5_NODES.length,
+    activeLeaderMacs: activeZoneLeaders,
   }
 }
 
@@ -55,8 +177,8 @@ function buildDerivedState(snapshot) {
       systemHealth: snapshot.gateway.online ? 'Awaiting sensors' : 'Offline',
     }
   }
-  const occupiedSpots = snapshot.spots.filter((s) => s.occupied && s.sensorOnline).length
-  const openSpots = snapshot.spots.filter((s) => !s.occupied && s.sensorOnline).length
+  const occupiedSpots = snapshot.spots.filter((s) => s.state === 'OCCUPIED' && s.sensorOnline).length
+  const openSpots = snapshot.spots.filter((s) => s.state === 'FREE' && s.sensorOnline).length
   const offlineSpots = snapshot.spots.filter((s) => !s.sensorOnline).length
   const onlineSensors = totalSpots - offlineSpots
   const occupancyRate = Math.round((occupiedSpots / totalSpots) * 100)
@@ -78,18 +200,48 @@ function buildDerivedState(snapshot) {
 }
 
 export function useParkingData() {
-  const { lotState, connectionStatus } = useLotState(WS_URL)
+  const { lotState, connectionStatus, refreshFromBackend } = useLotState(WS_URL, STATE_URL)
 
   const [events, setEvents] = useState([])
   const [lastRefresh, setLastRefresh] = useState(null)
   const [clockTick, setClockTick] = useState(() => Date.now())
+  const [refreshActiveUntil, setRefreshActiveUntil] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
   const prevStateRef = useRef(new Map()) // spotId -> state
   const prevLeaderRef = useRef(new Map()) // zoneId -> mac
 
   useEffect(() => {
-    const id = window.setInterval(() => setClockTick(Date.now()), 10000)
+    const id = window.setInterval(() => setClockTick(Date.now()), 1000)
     return () => window.clearInterval(id)
   }, [])
+
+  const pullBackendSnapshot = useCallback(async () => {
+    setIsRefreshing(true)
+    setRefreshError('')
+    try {
+      await refreshFromBackend()
+      setLastRefresh(new Date().toISOString())
+    } catch (err) {
+      setRefreshError(err instanceof Error ? err.message : 'Backend refresh failed')
+    } finally {
+      setIsRefreshing(false)
+    }
+  }, [refreshFromBackend])
+
+  useEffect(() => {
+    if (!refreshActiveUntil) return undefined
+
+    const id = window.setInterval(() => {
+      if (Date.now() >= refreshActiveUntil) {
+        setRefreshActiveUntil(0)
+        return
+      }
+      pullBackendSnapshot()
+    }, REFRESH_POLL_MS)
+
+    return () => window.clearInterval(id)
+  }, [pullBackendSnapshot, refreshActiveUntil])
 
   // Flatten zones->spots for the UI.
   const allSpots = useMemo(
@@ -156,18 +308,29 @@ export function useParkingData() {
     }
   }, [allSpots, lotState.zones])
 
+  useEffect(() => {
+    const newestSpotUpdate = allSpots.reduce((latest, spot) => {
+      return Math.max(latest, Number(spot.lastUpdate) || 0)
+    }, 0)
+    if (newestSpotUpdate) {
+      setLastRefresh(new Date(newestSpotUpdate).toISOString())
+    }
+  }, [allSpots])
+
   const snapshot = useMemo(() => {
     const leaderMacs = (lotState.zones || []).map((z) => z.leaderMac).filter(Boolean)
     const newestSpotUpdate = allSpots.reduce((latest, spot) => {
       return Math.max(latest, Number(spot.lastUpdate) || 0)
     }, 0)
+    const adaptedSpots = allSpots.map(adaptSpot)
     return {
-      spots: allSpots.map(adaptSpot),
+      spots: adaptedSpots,
       gateway: {
         online: connectionStatus === 'connected',
         lastSync: newestSpotUpdate ? new Date(newestSpotUpdate).toISOString() : lastRefresh,
         leaders: leaderMacs,
       },
+      controllerStatus: buildControllerStatus(adaptedSpots, leaderMacs),
       events,
       meta: {
         mode: 'live',
@@ -185,10 +348,13 @@ export function useParkingData() {
     derived,
     loading: connectionStatus === 'connecting',
     error: '',
+    refreshError,
     lastRefresh,
     connectionStatus,
-    // Compatibility shims — refresh is meaningless when the backend pushes.
-    isAutoRefresh: true,
+    isRefreshing,
+    refreshWindowActive: refreshActiveUntil > clockTick,
+    refreshSecondsRemaining: Math.max(0, Math.ceil((refreshActiveUntil - clockTick) / 1000)),
+    isAutoRefresh: refreshActiveUntil > clockTick,
     setIsAutoRefresh: () => {},
     dataSource:
       connectionStatus === 'connected'
@@ -199,8 +365,8 @@ export function useParkingData() {
             ? 'Disconnected'
             : 'Connecting',
     refreshNow: () => {
-      // No-op for WS, but we can bump lastRefresh so the UI re-renders relative-times.
-      setLastRefresh(new Date().toISOString())
+      setRefreshActiveUntil(Date.now() + REFRESH_WINDOW_MS)
+      pullBackendSnapshot()
     },
   }
 }

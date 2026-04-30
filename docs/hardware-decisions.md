@@ -35,8 +35,9 @@ constraint that the radio scheduler module exists to manage.
   test: explicitly send both directions and confirm receipt.
 - VL53L0X factory address is 0x29; if we ever want to share an I2C bus we'd
   need to use the XSHUT pin to reassign one at boot. Not relevant for v1.
-- C3 SuperMini I2C pin assignments vary between board batches. Confirm
-  GPIO8/9 against your board's silkscreen at bring-up.
+- C3 SuperMini I2C pin assignments vary between board batches. Current
+  VL53L0X wiring is SDA=GPIO4 and SCL=GPIO5; sensor firmware auto-probes
+  common alternate pairs at boot.
 
 ## Future: deferred decisions
 

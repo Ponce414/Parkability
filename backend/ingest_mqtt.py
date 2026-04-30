@@ -14,7 +14,7 @@ from typing import Optional
 
 import paho.mqtt.client as mqtt
 
-from state import lot_state
+from state import lot_state, normalize_state_from_distance
 from ws import manager
 
 log = logging.getLogger("ingest_mqtt")
@@ -82,12 +82,13 @@ class MQTTIngest:
             log.warning("malformed event: %s", e)
             return
 
+        state = normalize_state_from_distance(state, raw)
         received_wall_ts = lot_state.apply_sensor_update(
             spot_id, zone_id, state, lamport_ts, wall_ts, raw, leader_mac,
         )
         if received_wall_ts is not None:
             asyncio.run_coroutine_threadsafe(
-                manager.broadcast_spot_change(spot_id, state, lamport_ts, received_wall_ts, raw),
+                manager.broadcast_spot_change(spot_id, state, lamport_ts, received_wall_ts, raw, leader_mac),
                 self._loop,
             )
 

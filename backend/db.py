@@ -32,6 +32,23 @@ def init_db() -> None:
     """Create tables if missing. Safe to call repeatedly."""
     with connect() as conn:
         conn.executescript(SCHEMA_PATH.read_text())
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(spots)").fetchall()}
+        if "last_leader_mac" not in columns:
+            conn.execute("ALTER TABLE spots ADD COLUMN last_leader_mac TEXT")
+        conn.execute(
+            """
+            UPDATE spots
+               SET last_leader_mac = (
+                   SELECT e.leader_mac
+                     FROM events e
+                    WHERE e.spot_id = spots.spot_id
+                      AND e.leader_mac IS NOT NULL
+                    ORDER BY e.received_wall_ts DESC, e.event_id DESC
+                    LIMIT 1
+               )
+             WHERE last_leader_mac IS NULL
+            """
+        )
 
 
 def ensure_zone(zone_id: str, lot_id: str) -> None:
@@ -49,6 +66,7 @@ def upsert_spot(
     lamport_ts: int,
     received_wall_ts: int,
     raw_distance_mm: Optional[int],
+    leader_mac: Optional[str],
 ) -> None:
     """Idempotent write of the current view.
 
@@ -60,15 +78,17 @@ def upsert_spot(
         conn.execute(
             """
             INSERT INTO spots (spot_id, zone_id, current_state,
-                               last_update_wall_ts, last_lamport_ts, last_raw_distance_mm)
-            VALUES (?, ?, ?, ?, ?, ?)
+                               last_update_wall_ts, last_lamport_ts,
+                               last_raw_distance_mm, last_leader_mac)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(spot_id) DO UPDATE SET
                 current_state        = excluded.current_state,
                 last_update_wall_ts  = excluded.last_update_wall_ts,
                 last_lamport_ts      = excluded.last_lamport_ts,
-                last_raw_distance_mm = excluded.last_raw_distance_mm
+                last_raw_distance_mm = excluded.last_raw_distance_mm,
+                last_leader_mac      = excluded.last_leader_mac
             """,
-            (spot_id, zone_id, state, received_wall_ts, lamport_ts, raw_distance_mm),
+            (spot_id, zone_id, state, received_wall_ts, lamport_ts, raw_distance_mm, leader_mac),
         )
 
 
@@ -116,8 +136,9 @@ def get_lot_snapshot(lot_id: str) -> dict:
         for z in zones:
             spots = conn.execute(
                 """SELECT spot_id, current_state, last_update_wall_ts,
-                          last_lamport_ts, last_raw_distance_mm
-                     FROM spots WHERE zone_id = ?""",
+                          last_lamport_ts, last_raw_distance_mm, last_leader_mac
+                     FROM spots WHERE zone_id = ?
+                     ORDER BY spot_id""",
                 (z["zone_id"],),
             ).fetchall()
             result["zones"].append({
@@ -138,8 +159,9 @@ def get_zone_snapshot(zone_id: str) -> dict:
             return {}
         spots = conn.execute(
             """SELECT spot_id, current_state, last_update_wall_ts,
-                      last_lamport_ts, last_raw_distance_mm
-                 FROM spots WHERE zone_id = ?""",
+                      last_lamport_ts, last_raw_distance_mm, last_leader_mac
+                 FROM spots WHERE zone_id = ?
+                 ORDER BY spot_id""",
             (zone_id,),
         ).fetchall()
         return {

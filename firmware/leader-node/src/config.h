@@ -27,11 +27,11 @@
  * Leader connects to this AP to reach the backend.
  * Put real local credentials in ignored config.local.h. */
 #ifndef WIFI_SECURITY_ENTERPRISE
-#define WIFI_SECURITY_ENTERPRISE 1
+#define WIFI_SECURITY_ENTERPRISE 0
 #endif
 
 #ifndef WIFI_SSID
-#define WIFI_SSID "eduroam"
+#define WIFI_SSID "Parth’s iPhone"
 #endif
 
 #ifndef WIFI_PASSWORD
@@ -59,33 +59,36 @@
 #endif
 
 /* --- Backend uplink -----------------------------------------------------
- * Compile-time switch picks the transport. Default for local bring-up: REST. */
-/* #define UPLINK_PROTOCOL_MQTT 1 */
-#define UPLINK_PROTOCOL_REST 1
+ * Compile-time switch picks the transport. iPhone hotspot clients are not
+ * reliably reachable from each other over local IPv4, so MQTT uses an
+ * internet broker while the laptop backend subscribes to the same broker. */
+#define UPLINK_PROTOCOL_MQTT 1
+/* #define UPLINK_PROTOCOL_REST 1 */
 
 /* MQTT broker (used when UPLINK_PROTOCOL_MQTT). */
-#define MQTT_BROKER_HOST "192.168.1.10"
+#define MQTT_BROKER_HOST "35.158.179.76"
 #define MQTT_BROKER_PORT 1883
 
 /* REST backend (used when UPLINK_PROTOCOL_REST). */
 #ifndef REST_BACKEND_HOST
-#define REST_BACKEND_HOST "10.39.11.180"
+#define REST_BACKEND_HOST "192.0.0.2"
 #endif
 #ifndef REST_BACKEND_PORT
 #define REST_BACKEND_PORT 8000
 #endif
 
 /* --- Radio --------------------------------------------------------------
- * Must match sensor-node's ESPNOW_CHANNEL. */
-#define ESPNOW_CHANNEL 11
+ * Fallback ESP-NOW channel before the leader joins WiFi. Sensors use
+ * channel discovery, so they will follow the hotspot's live 2.4GHz channel. */
+#define ESPNOW_CHANNEL 1
 
 /* Radio scheduler tunables (inactivity-based strategy).
  *  - Stay in ESP-NOW mode until either the aggregator requests WiFi
  *    OR ESPNOW_MAX_DWELL_MS elapses without a switch.
  *  - When in WiFi mode, stay there until the aggregator drains OR
  *    WIFI_MAX_DWELL_MS, whichever is first. */
-#define ESPNOW_MAX_DWELL_MS 2000
-#define WIFI_MAX_DWELL_MS    500
+#define ESPNOW_MAX_DWELL_MS 1000
+#define WIFI_MAX_DWELL_MS   5000
 
 /* --- Heartbeat / Bully tunables ----------------------------------------- */
 #define HEARTBEAT_INTERVAL_MS  1000

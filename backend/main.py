@@ -11,6 +11,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 import db
 import ingest_mqtt
@@ -36,6 +37,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Parking Lot Backend", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 app.include_router(ingest_router)
 
 

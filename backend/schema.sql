@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS spots (
   current_state TEXT NOT NULL CHECK (current_state IN ('OCCUPIED', 'FREE', 'UNKNOWN')),
   last_update_wall_ts INTEGER,
   last_lamport_ts INTEGER,
-  last_raw_distance_mm INTEGER
+  last_raw_distance_mm INTEGER,
+  last_leader_mac TEXT
 );
 
 -- Append-only log. Source of truth for propagation-delay and ordering
@@ -43,3 +44,12 @@ CREATE INDEX IF NOT EXISTS idx_events_lamport ON events(lamport_ts);
 -- Seed a default lot so first-boot has something to render.
 INSERT OR IGNORE INTO lots (lot_id, name) VALUES ('lotA', 'Lot A (bring-up)');
 INSERT OR IGNORE INTO zones (zone_id, lot_id) VALUES ('zone1', 'lotA');
+INSERT OR IGNORE INTO spots
+  (spot_id, zone_id, current_state, last_update_wall_ts, last_lamport_ts, last_raw_distance_mm)
+VALUES
+  ('lotA/zone1/spot1', 'zone1', 'UNKNOWN', NULL, 0, NULL),
+  ('lotA/zone1/spot2', 'zone1', 'UNKNOWN', NULL, 0, NULL),
+  ('lotA/zone1/spot3', 'zone1', 'UNKNOWN', NULL, 0, NULL),
+  ('lotA/zone1/spot4', 'zone1', 'UNKNOWN', NULL, 0, NULL),
+  ('lotA/zone1/spot5', 'zone1', 'UNKNOWN', NULL, 0, NULL),
+  ('lotA/zone1/spot6', 'zone1', 'UNKNOWN', NULL, 0, NULL);

@@ -7,8 +7,8 @@ catch failures early.
 ## 0. Prerequisites
 
 - Python 3.11+, Node 18+, PlatformIO (`pip install platformio`)
-- One ESP32-C3 wired as **leader** (no sensor; just on USB power)
-- One or more ESP32-C3 + VL53L0X as **sensors** (SDA=GPIO8, SCL=GPIO9, 3V3, GND)
+- One ESP32-C5 wired as **leader** (no sensor; just on USB power)
+- One or more ESP32-C3 + VL53L0X as **sensors** (SDA=GPIO4, SCL=GPIO5, 3V3, GND)
 - A WiFi AP the leader can reach (2.4 GHz, WPA2-PSK)
 - Optional: Mosquitto broker on the same network for MQTT mode
 
@@ -76,6 +76,7 @@ Edit [`firmware/sensor-node/src/config.h`](../firmware/sensor-node/src/config.h)
 | `LEADER_MAC` | Paste the leader's MAC bytes |
 | `SPOT_ID` | Unique per sensor, e.g. `"lotA/zone1/spot17"` |
 | `ESPNOW_CHANNEL` | Same as leader |
+| `I2C_SDA_GPIO`, `I2C_SCL_GPIO` | Defaults are GPIO4/GPIO5; firmware auto-probes common alternate pairs |
 
 Flash:
 ```bash
